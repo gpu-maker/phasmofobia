@@ -2,22 +2,366 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>3D Ghost Investigation</title>
-<link rel="stylesheet" href="style.css">
+<title>Paranormal Investigation</title>
+<style>
+body { margin:0; background:black; overflow:hidden; font-family:Arial; }
+canvas { display:block; margin:0 auto; background:#111; }
+#ui {
+  position:absolute;
+  top:10px;
+  left:10px;
+  color:white;
+  font-size:14px;
+}
+#journal {
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  width:500px;
+  height:400px;
+  background:#111;
+  border:2px solid white;
+  padding:10px;
+  color:white;
+  display:none;
+  overflow:auto;
+}
+button { background:#222; color:white; border:1px solid white; padding:5px; margin-top:5px;}
+.room-label{
+  position:absolute;
+  bottom:10px;
+  left:10px;
+  color:#aaa;
+}
+</style>
 </head>
-
 <body>
 
-<div id="hud">
-Sanity: <span id="sanity">100</span>% |
-Temp: <span id="temp">20</span>°C |
-EMF: <span id="emf">0</span>
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div>Sanity: <span id="sanityText">100%</span></div>
+  <div>Equipment: <span id="equipText">EMF</span></div>
+  <div>Battery: <span id="batteryText">100%</span></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.160/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160/examples/js/controls/PointerLockControls.js"></script>
+<div id="journal"></div>
+<div class="room-label" id="roomLabel"></div>
 
-<script src="script.js"></script>
+<script>
+// ==============================
+// CANVAS SETUP
+// ==============================
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+canvas.width = 960;
+canvas.height = 600;
 
+let keys = {};
+document.addEventListener("keydown", e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === "j") game.toggleJournal();
+  if (e.key === "e") game.nextEquipment();
+});
+document.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+
+// ==============================
+// UTIL
+// ==============================
+function rand(min,max){ return Math.random()*(max-min)+min; }
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+
+// ==============================
+// MAP + ROOMS
+// ==============================
+class GameMap {
+  constructor(){
+    this.tile = 60;
+    this.cols = 16;
+    this.rows = 10;
+    this.rooms = [];
+    this.generateRooms();
+  }
+
+  generateRooms(){
+    // 4 fixed rectangular rooms
+    this.rooms = [
+      {name:"Living Room", x:1, y:1, w:6, h:4},
+      {name:"Kitchen", x:8, y:1, w:6, h:4},
+      {name:"Bedroom", x:1, y:6, w:6, h:3},
+      {name:"Bathroom", x:8, y:6, w:6, h:3}
+    ];
+  }
+
+  draw(){
+    ctx.fillStyle="#222";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.strokeStyle="#444";
+    ctx.lineWidth=3;
+
+    this.rooms.forEach(r=>{
+      ctx.strokeRect(
+        r.x*this.tile,
+        r.y*this.tile,
+        r.w*this.tile,
+        r.h*this.tile
+      );
+    });
+  }
+
+  getRoomAt(x,y){
+    for(let r of this.rooms){
+      if(
+        x > r.x*this.tile &&
+        x < (r.x+r.w)*this.tile &&
+        y > r.y*this.tile &&
+        y < (r.y+r.h)*this.tile
+      ) return r;
+    }
+    return null;
+  }
+}
+
+// ==============================
+// EQUIPMENT
+// ==============================
+class Equipment {
+  constructor(name){
+    this.name = name;
+    this.battery = 100;
+    this.active = true;
+  }
+
+  update(){
+    if(this.active){
+      this.battery -= 0.03;
+      if(this.battery<=0){
+        this.active=false;
+        this.battery=0;
+      }
+    }
+  }
+}
+
+// ==============================
+// PLAYER
+// ==============================
+class Player {
+  constructor(){
+    this.x=150;
+    this.y=150;
+    this.speed=2;
+    this.sanity=100;
+
+    this.equipmentList=[
+      new Equipment("EMF"),
+      new Equipment("Thermometer"),
+      new Equipment("UV"),
+      new Equipment("Spirit Box"),
+      new Equipment("Journal")
+    ];
+    this.current=0;
+  }
+
+  get equipment(){ return this.equipmentList[this.current]; }
+
+  update(){
+    let nx=this.x;
+    let ny=this.y;
+
+    if(keys["w"]) ny-=this.speed;
+    if(keys["s"]) ny+=this.speed;
+    if(keys["a"]) nx-=this.speed;
+    if(keys["d"]) nx+=this.speed;
+
+    this.x=nx;
+    this.y=ny;
+
+    this.equipment.update();
+
+    if(!game.isInLight()) this.sanity-=0.02;
+    if(game.ghost.hunting) this.sanity-=0.06;
+
+    if(this.sanity<=0) game.lose();
+
+    document.getElementById("sanityText").innerText=Math.floor(this.sanity)+"%";
+    document.getElementById("equipText").innerText=this.equipment.name;
+    document.getElementById("batteryText").innerText=Math.floor(this.equipment.battery)+"%";
+
+    let room = game.map.getRoomAt(this.x,this.y);
+    document.getElementById("roomLabel").innerText = room?room.name:"Hallway";
+  }
+
+  draw(){
+    ctx.fillStyle="white";
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,8,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// ==============================
+// GHOST
+// ==============================
+class Ghost {
+  constructor(map){
+    this.types=[
+      {name:"Shade", evidence:["EMF","Writing","Freezing"]},
+      {name:"Poltergeist", evidence:["EMF","Fingerprints","Spirit Box"]},
+      {name:"Revenant", evidence:["EMF","Freezing","Spirit Box"]},
+      {name:"Wraith", evidence:["Freezing","Spirit Box","Fingerprints"]},
+      {name:"Demon", evidence:["Writing","Spirit Box","Freezing"]}
+    ];
+
+    this.type=this.types[Math.floor(Math.random()*this.types.length)];
+
+    this.room = map.rooms[Math.floor(Math.random()*map.rooms.length)];
+    this.x = (this.room.x+this.room.w/2)*map.tile;
+    this.y = (this.room.y+this.room.h/2)*map.tile;
+
+    this.hunting=false;
+    this.huntTimer=0;
+  }
+
+  update(){
+    if(!this.hunting && game.player.sanity<40 && Math.random()<0.002){
+      this.hunting=true;
+      this.huntTimer=500;
+    }
+
+    if(this.hunting){
+      let dx=game.player.x-this.x;
+      let dy=game.player.y-this.y;
+      let d=Math.hypot(dx,dy);
+      this.x+=dx/d*1.6;
+      this.y+=dy/d*1.6;
+      this.huntTimer--;
+
+      if(dist(this,game.player)<10) game.lose();
+      if(this.huntTimer<=0) this.hunting=false;
+    }
+  }
+
+  draw(){
+    if(this.hunting){
+      ctx.fillStyle="red";
+      ctx.beginPath();
+      ctx.arc(this.x,this.y,10,0,Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+// ==============================
+// GAME
+// ==============================
+class Game {
+  constructor(){
+    this.map=new GameMap();
+    this.player=new Player();
+    this.ghost=new Ghost(this.map);
+    this.journalOpen=false;
+    this.evidenceFound=[];
+  }
+
+  update(){
+    this.player.update();
+    this.ghost.update();
+    this.checkEvidence();
+  }
+
+  draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    this.map.draw();
+    this.player.draw();
+    this.ghost.draw();
+    this.drawDarkness();
+  }
+
+  drawDarkness(){
+    ctx.fillStyle="rgba(0,0,0,0.95)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    let gradient=ctx.createRadialGradient(
+      this.player.x,this.player.y,30,
+      this.player.x,this.player.y,200
+    );
+    gradient.addColorStop(0,"rgba(0,0,0,0)");
+    gradient.addColorStop(1,"rgba(0,0,0,1)");
+    ctx.globalCompositeOperation="destination-out";
+    ctx.fillStyle=gradient;
+    ctx.beginPath();
+    ctx.arc(this.player.x,this.player.y,200,0,Math.PI*2);
+    ctx.fill();
+    ctx.globalCompositeOperation="source-over";
+  }
+
+  isInLight(){
+    return true; // simple version
+  }
+
+  checkEvidence(){
+    let room=this.map.getRoomAt(this.player.x,this.player.y);
+    if(!room || room!==this.ghost.room) return;
+
+    let equip=this.player.equipment.name;
+
+    if(this.ghost.type.evidence.includes(equip)){
+      if(!this.evidenceFound.includes(equip)){
+        this.evidenceFound.push(equip);
+        console.log("Evidence Found:",equip);
+      }
+    }
+  }
+
+  toggleJournal(){
+    this.journalOpen=!this.journalOpen;
+    let j=document.getElementById("journal");
+    j.style.display=this.journalOpen?"block":"none";
+    if(this.journalOpen){
+      j.innerHTML="<h2>Evidence Found</h2>";
+      this.evidenceFound.forEach(e=>j.innerHTML+=e+"<br>");
+      j.innerHTML+="<h3>Guess Ghost</h3>";
+      this.ghost.types.forEach(g=>{
+        j.innerHTML+=`<button onclick="game.guess('${g.name}')">${g.name}</button><br>`;
+      });
+    }
+  }
+
+  guess(name){
+    if(name===this.ghost.type.name){
+      alert("Correct! You identified the "+name);
+      localStorage.setItem("lastScore","Win");
+    } else {
+      alert("Wrong! It was "+this.ghost.type.name);
+    }
+    location.reload();
+  }
+
+  lose(){
+    alert("You Died. The ghost was "+this.ghost.type.name);
+    localStorage.setItem("lastScore","Lose");
+    location.reload();
+  }
+
+  nextEquipment(){
+    this.player.current++;
+    if(this.player.current>=this.player.equipmentList.length)
+      this.player.current=0;
+  }
+}
+
+// ==============================
+let game=new Game();
+
+function loop(){
+  game.update();
+  game.draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
 </body>
 </html>
